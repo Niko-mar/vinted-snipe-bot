@@ -5,6 +5,25 @@ import time
 from datetime import datetime, timezone
 from playwright.sync_api import sync_playwright
 import requests as standard_requests
+from flask import Flask
+from threading import Thread
+
+# ============ MINI-WEBSERVER FÜR RENDER (KEEP-ALIVE) ============
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "Vinted Snipe Bot is running 24/7!"
+
+def run_web():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host='0.0.0.0', port=port)
+
+def keep_alive():
+    t = Thread(target=run_web)
+    t.daemon = True
+    t.start()
+# ================================================================
 
 # ============ KONFIGURATION ============
 CONFIG = {
@@ -94,8 +113,6 @@ def main():
     print(f"[i] Starting Playwright browser monitor for '{cfg['search_text']}'...")
 
     with sync_playwright() as p:
-        # headless=True bedeutet, der Browser läuft im Hintergrund (unsichtbar)
-        # Wenn du sehen willst, was er tut, ändere es auf headless=False
         browser = p.chromium.launch(headless=True)
         context = browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -106,11 +123,9 @@ def main():
 
         while True:
             try:
-                # 1. Erst auf die Startseite gehen, damit der Schutz-Cookie geladen wird
                 page.goto(f"https://{cfg['domain']}", timeout=30000)
                 page.wait_for_timeout(3000)
 
-                # 2. Dann die API-Suchseite aufrufen
                 search_url = f"https://{cfg['domain']}/api/v2/catalog/items?search_text={cfg['search_text']}&per_page={cfg.get('per_page', 20)}&order=newest_first"
                 if cfg["price_from"]:
                     search_url += f"&price_from={cfg['price_from']}"
@@ -151,4 +166,7 @@ def main():
             time.sleep(sleep_time)
 
 if __name__ == "__main__":
+    # Startet den Webserver im Hintergrund, damit Render den Web Service nicht stoppt
+    keep_alive()
+    # Startet die Bot-Hauptschleife
     main()
