@@ -3,48 +3,51 @@ import os
 import random
 import time
 from datetime import datetime, timezone
-from playwright.sync_api import sync_playwright
+from curl_cffi import requests as cffi_requests
 import requests as standard_requests
 from flask import Flask
 from threading import Thread
 
-# ============ MINI-WEBSERVER FÜR RENDER (KEEP-ALIVE) ============
 app = Flask('')
 
 @app.route('/')
 def home():
-    return "Vinted Snipe Bot is running 24/7!"
-
-def run_web():
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host='0.0.0.0', port=port)
-
-def keep_alive():
-    t = Thread(target=run_web)
-    t.daemon = True
-    t.start()
-# ================================================================
+    return "Vinted Snipe Bot All is running 24/7!", 200
 
 # ============ KONFIGURATION ============
 CONFIG = {
     "domain": "www.vinted.de",
-    "search_text": "Nike Air Force 1",
+    "search_queries": [
+        "Ralph Lauren", "Polo Ralph Lauren", "Nike", "Adidas", "Lacoste",
+        "Tommy Hilfiger", "Carhartt", "Carhartt WIP", "Stüssy", "Supreme",
+        "Stone Island", "CP Company", "The North Face", "Patagonia", "Arc'teryx",
+        "Moncler", "Burberry", "Gucci", "Louis Vuitton", "Dior",
+        "Balenciaga", "Palm Angels", "Off-White", "Essentials", "Fear of God",
+        "New Balance", "ASICS", "Salomon", "Jordan", "Air Max",
+        "Dunk", "Yeezy", "Samba", "Gazelle", "Bape",
+        "Corteiz", "Trapstar", "Denim Tears", "Ami Paris", "Maison Margiela",
+        "Canada Goose", "Alpha Industries", "Levi's", "Dickies", "G-Star",
+        "Vintage", "Y2K", "Zip Hoodie", "Strickpullover", "Flared Jeans"
+    ],
     "price_from": None,
-    "price_to": 60,
-    "size_filter": "42",
-    "discord_webhook_url": "https://discord.com/api/webhooks/1533547739546386533/gEn5ApJrKK1lNnG3yvVoykUNH3D0ecW2eLLimMfo97hFvxV1tD9_pyBuhZxqAGPoDSNV",
-    "poll_interval_seconds": 45,
+    "price_to": 150,
+    "size_filter": "", 
+    "discord_webhook_url": os.environ.get("DISCORD_WEBHOOK_URL", "https://discord.com/api/webhooks/1533547739546386533/gEn5ApJrKK1lNnG3yvVoykUNH3D0ecW2eLLimMfo97hFvxV1tD9_pyBuhZxqAGPoDSNV"),
+    "poll_interval_seconds": 30,
     "seen_items_file": "vinted_seen_items.json",
 }
 # ========================================
 
 def load_seen_items(path):
     if os.path.exists(path):
-        with open(path, "r", encoding="utf-8") as f:
-            return set(json.load(f))
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return set(json.load(f))
+        except:
+            return set()
     return set()
 
-def save_seen_items(path, seen_items, max_keep=2000):
+def save_seen_items(path, seen_items, max_keep=5000):
     items_to_save = list(seen_items)[-max_keep:]
     with open(path, "w", encoding="utf-8") as f:
         json.dump(items_to_save, f)
@@ -107,66 +110,75 @@ def send_discord_notification(webhook_url, item, domain):
     except Exception as e:
         print(f"[!] Error sending Discord notification: {e}")
 
-def main():
+def search_worker():
     cfg = CONFIG
     seen_items = load_seen_items(cfg["seen_items_file"])
-    print(f"[i] Starting Playwright browser monitor for '{cfg['search_text']}'...")
+    print(f"[i] Starting background curl_cffi monitor for all 50 queries...")
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        )
-        page = context.new_page()
+    session = cffi_requests.Session(impersonate="chrome120")
 
-        first_run = True
+    try:
+        session.get(f"https://{cfg['domain']}", timeout=30)
+        time.sleep(2)
+    except Exception as e:
+        print(f"[!] Warning on initial load: {e}")
 
-        while True:
-            try:
-                page.goto(f"https://{cfg['domain']}", timeout=30000)
-                page.wait_for_timeout(3000)
+    first_run = True
 
-                search_url = f"https://{cfg['domain']}/api/v2/catalog/items?search_text={cfg['search_text']}&per_page={cfg.get('per_page', 20)}&order=newest_first"
-                if cfg["price_from"]:
-                    search_url += f"&price_from={cfg['price_from']}"
-                if cfg["price_to"]:
-                    search_url += f"&price_to={cfg['price_to']}"
+    while True:
+        try:
+            for query in cfg["search_queries"]:
+                try:
+                    search_url = f"https://{cfg['domain']}/api/v2/catalog/items?search_text={query}&per_page=15&order=newest_first"
+                    if cfg["price_from"]:
+                        search_url += f"&price_from={cfg['price_from']}"
+                    if cfg["price_to"]:
+                        search_url += f"&price_to={cfg['price_to']}"
 
-                response = page.goto(search_url, timeout=30000)
-                
-                if response and response.status == 200:
-                    data = response.json()
-                    items = data.get("items", [])
+                    response = session.get(search_url, timeout=30)
+                    
+                    if response.status_code == 200:
+                        data = response.json()
+                        items = data.get("items", [])
 
-                    new_items = []
-                    for item in items:
-                        item_id = str(item["id"])
-                        if item_id in seen_items:
-                            continue
-                        seen_items.add(item_id)
-                        if matches_size(item, cfg["size_filter"]):
-                            new_items.append(item)
+                        new_items = []
+                        for item in items:
+                            item_id = str(item["id"])
+                            if item_id in seen_items:
+                                continue
+                            seen_items.add(item_id)
+                            if matches_size(item, cfg["size_filter"]):
+                                new_items.append(item)
 
-                    if first_run:
-                        print(f"[+] SUCCESS! {len(items)} items fetched via Browser. Monitoring is active!")
-                        first_run = False
+                        if not first_run:
+                            for item in new_items:
+                                print(f"[+] New match found for {query}: {item.get('title')}")
+                                send_discord_notification(cfg["discord_webhook_url"], item, cfg["domain"])
+                                time.sleep(1)
+
+                        save_seen_items(cfg["seen_items_file"], seen_items)
                     else:
-                        for item in new_items:
-                            print(f"[+] New match: {item.get('title')}")
-                            send_discord_notification(cfg["discord_webhook_url"], item, cfg["domain"])
+                        print(f"[!] API-Fehler für '{query}' / Statuscode: {response.status_code}")
 
-                    save_seen_items(cfg["seen_items_file"], seen_items)
-                else:
-                    print(f"[!] API-Fehler / Statuscode: {response.status if response else 'Unbekannt'}")
+                except Exception as e:
+                    print(f"[!] Query error for '{query}': {e}")
+                
+                time.sleep(random.uniform(1.5, 3))
 
-            except Exception as e:
-                print(f"[!] Query error: {e}")
+            if first_run:
+                print("[+] SUCCESS! All initial items cached. Now actively monitoring...")
+                first_run = False
 
-            sleep_time = cfg["poll_interval_seconds"] + random.uniform(2, 10)
+            sleep_time = cfg["poll_interval_seconds"] + random.uniform(2, 5)
             time.sleep(sleep_time)
+        except Exception as e:
+            print(f"[!] Worker error: {e}")
+            time.sleep(10)
 
 if __name__ == "__main__":
-    # Startet den Webserver im Hintergrund, damit Render den Web Service nicht stoppt
-    keep_alive()
-    # Startet die Bot-Hauptschleife
-    main()
+    bot_thread = Thread(target=search_worker)
+    bot_thread.daemon = True
+    bot_thread.start()
+
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host='0.0.0.0', port=port)
